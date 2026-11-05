@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1650">
+  <title>Familia EMETRA · Control de asistencia</title>
+  <link rel="icon" type="image/png" href="img/icono.png">
+  <link rel="apple-touch-icon" href="img/icono.png">
+  <link rel="stylesheet" href="css/estilos.css">
+  <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js" defer></script>
+  <script src="js/config.js" defer></script>
+  <script src="js/app.js" defer></script>
+</head>
+<body>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<main class="wrap">
+
+  <!-- ================= INGRESO ================= -->
+  <section id="vLogin" class="hide">
+    <img class="logo-grande" src="img/logo.png" alt="Familia EMETRA">
+    <p class="subtitulo">Control de asistencia</p>
+    <form id="fLogin" autocomplete="off">
+      <label for="lNombre">Nombre y apellido</label>
+      <input id="lNombre" placeholder="María López" autocapitalize="words" required>
+      <label for="lPin">PIN</label>
+      <input id="lPin" type="password" inputmode="numeric" maxlength="8" placeholder="••••" required>
+      <button class="btn" type="submit" id="bLogin">Ingresar</button>
+    </form>
+    <div id="lErr" class="aviso error hide"></div>
+    <p class="nota">Administrador: escribe <b>Administrador</b> como nombre y tu PIN.</p>
+  </section>
+
+  <!-- ================= ENCARGADO ================= -->
+  <section id="vEnc" class="hide">
+    <header class="encabezado">
+      <img src="img/logo.png" alt="Familia EMETRA">
+      <div class="quien"><b class="jsNombre"></b><span>Encargado de asistencia</span></div>
+      <button class="enlace jsSalir" type="button">Salir</button>
+    </header>
+    <div class="fijo">
+      <label for="eArea">Área o departamento</label>
+      <select id="eArea"></select>
+      <label for="eBuscar">Buscar nombre</label>
+      <input id="eBuscar" type="search" placeholder="Escribe una letra…" autocomplete="off" autocapitalize="off">
+      <p class="contador" id="eCont"></p>
+    </div>
+    <div id="eLista"></div>
+    <div class="barra hide" id="eBarra">
+      <button class="btn lima" type="button" id="bConfirmar"></button>
+    </div>
+  </section>
+
+  <!-- ================= ADMINISTRADOR ================= -->
+  <section id="vAdm" class="hide">
+    <header class="encabezado">
+      <img src="img/logo.png" alt="Familia EMETRA">
+      <div class="quien"><b>Administrador</b><span>Panel de control</span></div>
+      <button class="enlace jsSalir" type="button">Salir</button>
+    </header>
+
+    <nav class="pestanas" id="tabs">
+      <button data-tab="tResumen" class="activa">Resumen</button>
+      <button data-tab="tAsis">Asistencia</button>
+      <button data-tab="tEnc">Encargados</button>
+      <button data-tab="tHist">Historial</button>
+      <button data-tab="tAjustes">Ajustes</button>
+    </nav>
+
+    <!-- Resumen -->
+    <div id="tResumen" class="tab">
+      <div class="stats">
+        <div class="stat"><b class="lima-txt" id="sAsis">0</b><span>Asistieron</span></div>
+        <div class="stat"><b id="sTotal">0</b><span>Total</span></div>
+        <div class="stat"><b class="rojo-txt" id="sGal">0</b><span>Galardonados presentes</span></div>
+      </div>
+      <button class="btn" type="button" id="bSubirP">Subir lista de personas</button>
+      <button class="btn borde" type="button" id="bSubirG">Subir lista de galardonados</button>
+      <button class="btn lima" type="button" id="bExcel">Descargar Excel</button>
+      <input type="file" id="fPersonas" accept=".xlsx,.xls,.csv" class="hide">
+      <input type="file" id="fGalard" accept=".xlsx,.xls,.csv" class="hide">
+      <div id="subirRes" class="aviso hide"></div>
+      <p class="nota">Al subir una lista se agregan solo los nombres nuevos. Los que ya existen no se duplican y conservan su asistencia.</p>
+      <h3>Por área</h3>
+      <div class="tarjeta" id="porArea"></div>
+    </div>
+
+    <!-- Asistencia -->
+    <div id="tAsis" class="tab hide">
+      <label for="aBuscar">Buscar</label>
+      <input id="aBuscar" type="search" placeholder="Nombre o área" autocomplete="off">
+      <div class="filtros">
+        <label><input type="radio" name="aFiltro" value="si" checked> Asistieron</label>
+        <label><input type="radio" name="aFiltro" value="no"> Faltan</label>
+        <label><input type="radio" name="aFiltro" value="g"> Galardonados</label>
+      </div>
+      <div class="tarjeta" id="aLista"></div>
+    </div>
+
+    <!-- Encargados -->
+    <div id="tEnc" class="tab hide">
+      <div class="tarjeta">
+        <h4 id="encTitulo">Nuevo encargado</h4>
+        <form id="fEnc" autocomplete="off">
+          <input type="hidden" id="encId">
+          <label for="encNombre">Nombre y apellido</label>
+          <input id="encNombre" placeholder="Juan Pérez" required>
+          <label for="encPin">PIN (4 dígitos)</label>
+          <input id="encPin" inputmode="numeric" maxlength="4" placeholder="1234" required>
+          <label class="check hide" id="encActivoW"><input type="checkbox" id="encActivo" checked> Cuenta activa</label>
+          <button class="btn" type="submit" id="bEncGuardar">Agregar encargado</button>
+          <button class="btn borde hide" type="button" id="bEncCancelar">Cancelar edición</button>
+        </form>
+        <div id="encErr" class="aviso error hide"></div>
+      </div>
+      <h3>Encargados (<span id="encCuenta">0</span> de 15)</h3>
+      <div class="tarjeta" id="encLista"></div>
+    </div>
+
+    <!-- Historial -->
+    <div id="tHist" class="tab hide">
+      <button class="btn borde chico" type="button" id="bHistRef">Actualizar</button>
+      <p class="nota">Últimos 300 movimientos. El Excel incluye el historial completo.</p>
+      <div class="tarjeta" id="histLista"></div>
+    </div>
+
+    <!-- Ajustes -->
+    <div id="tAjustes" class="tab hide">
+      <div class="tarjeta">
+        <form id="fAjustes" autocomplete="off">
+          <label for="ajPin">Nuevo PIN de administrador (4 a 8 dígitos)</label>
+          <input id="ajPin" type="password" inputmode="numeric" maxlength="8" placeholder="Déjalo vacío para no cambiarlo">
+          <label for="ajTiempo">Cerrar sesión tras minutos sin actividad</label>
+          <input id="ajTiempo" type="number" min="5" max="240" inputmode="numeric">
+          <button class="btn" type="submit">Guardar ajustes</button>
+        </form>
+        <div id="ajRes" class="aviso hide"></div>
+      </div>
+      <h3>Galardonados que no están en la lista</h3>
+      <p class="nota">Nombres de la lista de galardonados que todavía no aparecen en la lista de personas. Revisa si están mal escritos.</p>
+      <div class="tarjeta" id="galSin"></div>
+    </div>
+  </section>
+
+  <!-- ================= SIN CONFIGURAR ================= -->
+  <section id="vConfig" class="hide">
+    <img class="logo-grande" src="img/logo.png" alt="Familia EMETRA">
+    <div class="aviso error">Falta configurar la conexión. Abre <b>js/config.js</b> y pega la URL y la llave de Supabase (ver README).</div>
+  </section>
+</main>
+</body>
+</html>
