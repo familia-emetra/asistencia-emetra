@@ -117,3 +117,4 @@ Los proyectos gratuitos se pausan tras una semana sin uso. Entra a supabase.com 
 
 **¿Cambio algo del diseño?**
 Los colores están al inicio de `css/estilos.css` y el logo en `img/logo.png`.
+Página: https://familia-emetra.github.io/asistencia-emetra/
