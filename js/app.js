@@ -176,10 +176,50 @@
     if (sel.dataset.h !== html) { sel.innerHTML = html; sel.dataset.h = html; sel.value = areas.includes(actual) ? actual : ''; }
   }
 
+  // Búsqueda por palabras: cada palabra escrita debe ser el inicio de alguna palabra del nombre,
+  // en cualquier orden. "jose hernandez" encuentra "José Luis Hernández García".
   function coincide(p, q) {
     if (!q) return true;
-    const k = norm(p.n);
-    return k.startsWith(q) || k.split(' ').some((w) => w.startsWith(q));
+    const palabras = norm(p.n).split(' ');
+    return q.split(' ').every((t) => palabras.some((w) => w.startsWith(t)));
+  }
+
+  // Puntaje para ordenar: menor = mejor coincidencia.
+  function puntaje(p, q) {
+    if (!q) return 0;
+    const k = norm(p.n), palabras = k.split(' '), ts = q.split(' ');
+    let s = 0;
+    if (!k.startsWith(q)) s += 4;                                   // no empieza igual que lo escrito
+    if (!palabras[0].startsWith(ts[0])) s += 2;                     // la primera palabra no es el primer nombre
+    ts.forEach((t) => { if (!palabras.includes(t)) s += 1; });      // palabras incompletas
+    let pos = -1, enOrden = true;                                   // palabras en el mismo orden
+    ts.forEach((t) => { const i = palabras.findIndex((w, j) => j > pos && w.startsWith(t)); if (i < 0) enOrden = false; else pos = i; });
+    if (!enOrden) s += 1;
+    return s;
+  }
+  const ordenar = (lista, q) => q ? lista.map((p) => [puntaje(p, q), p]).sort((a, b) => a[0] - b[0] || a[1].n.localeCompare(b[1].n, 'es')).map((x) => x[1]) : lista;
+
+  // Botón ✕ grande para limpiar un buscador
+  function botonLimpiar(input, alLimpiar) {
+    if (!document.getElementById('estiloBuscar')) {
+      const st = document.createElement('style'); st.id = 'estiloBuscar';
+      st.textContent = 'input[type=search]::-webkit-search-cancel-button{-webkit-appearance:none;display:none}';
+      document.head.appendChild(st);
+    }
+    const caja = document.createElement('div');
+    caja.style.cssText = 'position:relative';
+    input.parentNode.insertBefore(caja, input);
+    caja.appendChild(input);
+    input.style.paddingRight = '56px';
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = '✕'; b.setAttribute('aria-label', 'Borrar búsqueda');
+    b.style.cssText = 'position:absolute;right:6px;top:50%;transform:translateY(-50%);width:42px;height:42px;border-radius:50%;' +
+      'border:none;background:#d9b97a;color:#0b1650;font-size:20px;font-weight:800;cursor:pointer;display:none';
+    caja.appendChild(b);
+    const ver = () => (b.style.display = input.value ? 'block' : 'none');
+    input.addEventListener('input', ver);
+    b.addEventListener('click', () => { input.value = ''; ver(); input.focus(); alLimpiar(); });
+    return ver;
   }
 
   function nombreHTML(p) {
@@ -215,7 +255,7 @@
     const cont = $('eLista');
     if (!personas.length) { cont.innerHTML = '<div class="vacio">Todavía no hay personas cargadas.</div>'; $('eCont').textContent = ''; return; }
     if (!area && !q) { cont.innerHTML = '<div class="vacio">Elige un área o escribe una letra para buscar.</div>'; $('eCont').textContent = ''; return; }
-    const lista = personas.filter((p) => (!area || p.a === area) && coincide(p, q));
+    const lista = ordenar(personas.filter((p) => (!area || p.a === area) && coincide(p, q)), q);
     // si la persona abierta la registró otro encargado mientras tanto, se cierra
     const pa = personas.find((x) => x.id === abierto);
     if (!pa || (pa.por && !pa.mio)) abierto = null;
@@ -326,8 +366,8 @@
     const q = norm($('aBuscar').value);
     const filtro = (document.querySelector('input[name=aFiltro]:checked') || {}).value || 'si';
     let lista = personas.filter((p) => filtro === 'si' ? p.por : filtro === 'no' ? !p.por : filtro === 'cnl' ? (p.c && !p.por) : p.g);
-    if (q) lista = lista.filter((p) => coincide(p, q) || norm(p.a).includes(q));
-    if (filtro === 'si') lista.sort((a, b) => String(b.f).localeCompare(String(a.f)));
+    if (q) lista = ordenar(lista.filter((p) => coincide(p, q) || norm(p.a).includes(q)), q);
+    else if (filtro === 'si') lista.sort((a, b) => String(b.f).localeCompare(String(a.f)));
     const MAX = 400;
     $('aLista').innerHTML = lista.length ? lista.slice(0, MAX).map((p) => `
       <div class="item${p.g ? ' gal' : ''}">
@@ -381,7 +421,7 @@
   function buscarRevisar(ev) {
     const inp = ev.target.closest('[data-buscar]'); if (!inp) return;
     const id = inp.dataset.buscar, q = norm(inp.value);
-    const res = q.length < 2 ? [] : personas.filter((p) => coincide(p, q)).slice(0, 8);
+    const res = q.length < 2 ? [] : ordenar(personas.filter((p) => coincide(p, q)), q).slice(0, 8);
     $('rb-' + id).innerHTML = res.map((c) => `<button class="chip" data-asig="${id}" data-p="${c.id}">${esc(c.n)} <small>· ${esc(c.a)}</small></button>`).join('')
       || (q.length >= 2 ? '<span class="sub">Sin resultados.</span>' : '');
   }
@@ -680,6 +720,8 @@
     // encargado
     $('eArea').addEventListener('change', () => { abierto = null; pintarLista(); });
     $('eBuscar').addEventListener('input', pintarLista);
+    botonLimpiar($('eBuscar'), () => { abierto = null; pintarLista(); });
+    botonLimpiar($('aBuscar'), pintarAsistenciaAdm);
     $('eLista').addEventListener('click', clicLista);
 
     // admin
