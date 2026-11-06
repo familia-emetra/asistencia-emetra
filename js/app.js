@@ -1,4 +1,4 @@
-/* Familia EMETRA · Control de asistencia */
+/* Familia EMETRA · Control de asistencia · v2 */
 (function () {
   'use strict';
 
@@ -11,6 +11,7 @@
     timeZone: 'America/Guatemala', day: '2-digit', month: '2-digit', year: 'numeric',
     hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '';
   const hora = (f) => f ? new Date(f).toLocaleTimeString('es-GT', { timeZone: 'America/Guatemala', hour: '2-digit', minute: '2-digit', hour12: false }) : '';
+  const famTxt = (n) => `${n} ${n === 1 ? 'familiar' : 'familiares'}`;
 
   const MENSAJES = {
     CREDENCIALES: 'Nombre o PIN incorrecto.',
@@ -20,9 +21,11 @@
     BLOQUEADO: 'Demasiados intentos fallidos. Espera 10 minutos e intenta de nuevo.',
     SESION_EXPIRADA: 'Tu sesión se cerró. Vuelve a ingresar.',
     NO_AUTORIZADO: 'Solo el administrador puede hacer eso.',
-    NO_PERMITIDO: 'Solo quien marcó esta asistencia puede quitarla.',
+    NO_PERMITIDO: 'Solo quien registró esta asistencia puede cambiarla.',
     NO_MARCADO: 'Esa asistencia ya no estaba marcada.',
-    SOLO_ENCARGADOS: 'El administrador no marca asistencia; solo puede quitarla.',
+    NO_EXISTE: 'Ese registro ya no existe. Actualiza la página.',
+    SOLO_ENCARGADOS: 'El administrador no marca asistencia; solo puede corregirla o quitarla.',
+    FAMILIARES_INVALIDO: 'El número de familiares no es válido.',
     NOMBRE_APELLIDO: 'Escribe nombre y apellido.',
     NOMBRE_RESERVADO: 'Ese nombre está reservado.',
     PIN_INVALIDO: 'El PIN debe tener 4 dígitos.',
@@ -31,6 +34,7 @@
     NOMBRE_EN_USO: 'Ya existe un encargado con ese nombre.',
     LIMITE_15: 'Ya hay 15 encargados.',
     TIEMPO_INVALIDO: 'El tiempo debe estar entre 5 y 240 minutos.',
+    ACCION_INVALIDA: 'Acción no válida.',
     RED: 'Sin conexión. Revisa tu internet e intenta de nuevo.'
   };
 
@@ -52,7 +56,7 @@
 
   // ---------------- Conexión ----------------
   const cfg = window.CONFIG || {};
-  const URL_OK = /^https:\/\/.+/.test(cfg.SUPABASE_URL || '') && cfg.SUPABASE_KEY && !/PEGA_AQUI/.test(cfg.SUPABASE_KEY);
+  const URL_OK = /^https?:\/\/.+/.test(cfg.SUPABASE_URL || '') && cfg.SUPABASE_KEY && !/PEGA_AQUI/.test(cfg.SUPABASE_KEY);
 
   async function rpc(fn, args) {
     const headers = { 'Content-Type': 'application/json', apikey: cfg.SUPABASE_KEY };
@@ -81,9 +85,11 @@
   const LLAVE = 'emetra_asistencia_sesion';
   let S = null;            // { token, rol, nombre }
   let personas = [];
-  let seleccion = new Set();
   let huboActividad = true;
   let timer = null;
+  let abierto = null;      // id de la persona con el panel abierto (encargado)
+  let contador = 0;        // familiares en el panel abierto
+  let ocupado = false;
 
   function guardarSesion() { try { S ? localStorage.setItem(LLAVE, JSON.stringify(S)) : localStorage.removeItem(LLAVE); } catch (e) { /* sin almacenamiento */ } }
   function leerSesion() { try { return JSON.parse(localStorage.getItem(LLAVE) || 'null'); } catch (e) { return null; } }
@@ -124,13 +130,13 @@
     const tok = S.token;
     S = null; guardarSesion(); detener();
     try { await rpc('cerrar_sesion', { p_token: tok }); } catch (e) { /* igual se sale */ }
-    seleccion.clear();
+    abierto = null;
     vista('vLogin');
   }
 
   async function arrancar() {
     document.querySelectorAll('.jsNombre').forEach((el) => (el.textContent = S.nombre));
-    seleccion.clear();
+    abierto = null;
     await refrescar(true);
     if (!S) return;
     if (S.rol === 'admin') { vista('vAdm'); abrirTab('tResumen'); }
@@ -140,21 +146,25 @@
 
   function iniciar() {
     detener();
-    timer = setInterval(() => { if (!document.hidden) refrescar(false).catch(() => {}); },
+    timer = setInterval(() => { if (!document.hidden && !ocupado) refrescar(false).catch(() => {}); },
       Math.max(3, Number(cfg.REFRESCO_SEGUNDOS) || 6) * 1000);
   }
   function detener() { clearInterval(timer); timer = null; }
 
-  let ultimaCarga = null;
+  let pendientes = 0;
   async function refrescar(forzarActividad) {
     if (!S) return;
     const activo = forzarActividad || huboActividad;
     huboActividad = false;
     const r = await rpc('listar_personas', { p_token: S.token, p_activo: activo });
     personas = r.personas || [];
-    ultimaCarga = r;
-    if (S.rol === 'admin') { pintarResumen(); pintarAsistenciaAdm(); if (!$('ajTiempo').value) $('ajTiempo').value = r.timeout; }
-    else { llenarAreas(); pintarLista(); }
+    if (S.rol === 'admin') {
+      pendientes = r.pendientes || 0;
+      $('globoRev').textContent = pendientes;
+      $('globoRev').classList.toggle('hide', !pendientes);
+      pintarResumen(); pintarAsistenciaAdm();
+      if (!$('ajTiempo').value) $('ajTiempo').value = r.timeout;
+    } else { llenarAreas(); pintarLista(); }
   }
 
   // ---------------- Encargado ----------------
@@ -172,67 +182,100 @@
     return k.startsWith(q) || k.split(' ').some((w) => w.startsWith(q));
   }
 
+  function nombreHTML(p) {
+    return `${esc(p.n)}${p.g ? ' 🏅' : ''}${p.c ? '<span class="conf" title="Confirmó">✅</span>' : ''}`;
+  }
+
+  function panelHTML(p) {
+    const cont = `<div class="lbl">Familiares que lo acompañan</div>
+      <div class="contador-fam">
+        <button type="button" data-acc="menos" aria-label="Quitar uno">–</button>
+        <span class="num">${contador}</span>
+        <button type="button" data-acc="mas" aria-label="Agregar uno">+</button>
+      </div>`;
+    if (!p.por) {
+      return `<div class="panel">
+        ${p.c ? '' : '<div class="aviso-mini">⚠️ Esta persona no confirmó asistencia. Puedes registrarla igual.</div>'}
+        ${cont}
+        <div class="botones">
+          <button class="btn borde" type="button" data-acc="cerrar">Cancelar</button>
+          <button class="btn lima" type="button" data-acc="confirmar">✓ Confirmar asistencia</button>
+        </div></div>`;
+    }
+    return `<div class="panel">${cont}
+      <div class="botones">
+        <button class="btn peligro" type="button" data-acc="quitar">Quitar asistencia</button>
+        <button class="btn" type="button" data-acc="guardar">Guardar familiares</button>
+      </div></div>`;
+  }
+
   function pintarLista() {
     const area = $('eArea').value;
     const q = norm($('eBuscar').value);
     const cont = $('eLista');
-    if (!personas.length) { cont.innerHTML = '<div class="vacio">Todavía no hay personas cargadas.</div>'; $('eCont').textContent = ''; return barra(); }
-    if (!area && !q) { cont.innerHTML = '<div class="vacio">Elige un área o escribe una letra para buscar.</div>'; $('eCont').textContent = ''; return barra(); }
+    if (!personas.length) { cont.innerHTML = '<div class="vacio">Todavía no hay personas cargadas.</div>'; $('eCont').textContent = ''; return; }
+    if (!area && !q) { cont.innerHTML = '<div class="vacio">Elige un área o escribe una letra para buscar.</div>'; $('eCont').textContent = ''; return; }
     const lista = personas.filter((p) => (!area || p.a === area) && coincide(p, q));
+    // si la persona abierta la registró otro encargado mientras tanto, se cierra
+    const pa = personas.find((x) => x.id === abierto);
+    if (!pa || (pa.por && !pa.mio)) abierto = null;
     const presentes = lista.filter((p) => p.por).length;
-    $('eCont').textContent = `${lista.length} ${lista.length === 1 ? 'persona' : 'personas'} · ${presentes} con asistencia`;
-    if (!lista.length) { cont.innerHTML = '<div class="vacio">No hay nombres que coincidan.</div>'; return barra(); }
+    const conf = lista.filter((p) => p.c).length;
+    $('eCont').textContent = `${lista.length} ${lista.length === 1 ? 'persona' : 'personas'} · ${conf} confirmaron · ${presentes} con asistencia`;
+    if (!lista.length) { cont.innerHTML = '<div class="vacio">No hay nombres que coincidan.</div>'; return; }
     const MAX = 300;
     cont.innerHTML = lista.slice(0, MAX).map((p) => {
       let cls = '', ic = '', sub = esc(p.a), fila = '';
       if (p.por) {
-        if (p.mio) { cls = 'mia'; ic = '✓'; sub += ' · Marcado por ti ' + hora(p.f) + ' · toca para quitar'; }
-        else { cls = 'ajena'; ic = '✓'; fila = ' ajena'; sub += ' · Marcado por ' + esc(p.por) + ' ' + hora(p.f); }
-      } else if (seleccion.has(p.id)) { cls = 'sel'; ic = '✓'; }
-      return `<div class="fila${p.g ? ' gal' : ''}${fila}" data-id="${p.id}">
-        <div class="nm"><b>${esc(p.n)}${p.g ? '<span class="insignia">🏅 Galardonado</span>' : ''}</b><div class="sub">${sub}</div></div>
-        <div class="casilla ${cls}">${ic}</div></div>`;
+        sub += ` · <span class="fam">👨‍👩‍👧 ${famTxt(p.fam)}</span>`;
+        if (p.mio) { cls = 'mia'; ic = '✓'; sub += ' · por ti ' + hora(p.f); }
+        else { cls = 'ajena'; ic = '✓'; fila = ' ajena'; sub += ' · por ' + esc(p.por) + ' ' + hora(p.f); }
+      } else if (!p.c) { sub += ' · no confirmó'; }
+      const ab = p.id === abierto;
+      return `<div class="fila${p.g ? ' gal' : ''}${fila}${ab ? ' abierta' : ''}" data-id="${p.id}">
+        <div class="nm"><b>${nombreHTML(p)}</b><div class="sub">${sub}</div></div>
+        <div class="casilla ${cls}">${ic}</div></div>${ab ? panelHTML(p) : ''}`;
     }).join('') + (lista.length > MAX ? `<div class="vacio">Hay ${lista.length - MAX} más. Escribe más letras para encontrar el nombre.</div>` : '');
-    barra();
   }
 
-  function barra() {
-    // quitar de la selección a quien ya marcó otra persona
-    seleccion.forEach((id) => { const p = personas.find((x) => x.id === id); if (!p || p.por) seleccion.delete(id); });
-    $('eBarra').classList.toggle('hide', !seleccion.size);
-    $('bConfirmar').textContent = `✓ Confirmar asistencia (${seleccion.size})`;
-  }
-
-  async function tocarFila(ev) {
+  async function clicLista(ev) {
+    const acc = ev.target.closest('[data-acc]');
+    if (acc) { await accionPanel(acc.dataset.acc); return; }
+    if (ev.target.closest('.panel')) return;
     const f = ev.target.closest('.fila'); if (!f) return;
     const id = Number(f.dataset.id);
     const p = personas.find((x) => x.id === id); if (!p) return;
-    if (p.por) {
-      if (!p.mio) { toast('Solo ' + p.por + ' puede quitar esta asistencia', true); return; }
-      if (!confirm('¿Quitar la asistencia de ' + p.n + '?')) return;
-      try {
-        await rpc('quitar_asistencia', { p_token: S.token, p_persona_id: id });
-        toast('Asistencia quitada');
-        await refrescar(true);
-      } catch (e) { toast(e.message, true); refrescar(true).catch(() => {}); }
-      return;
-    }
-    seleccion.has(id) ? seleccion.delete(id) : seleccion.add(id);
+    if (p.por && !p.mio) { toast('Solo ' + p.por + ' puede cambiar esta asistencia', true); return; }
+    if (abierto === id) { abierto = null; }
+    else { abierto = id; contador = p.por ? (p.fam || 0) : 0; }
     pintarLista();
   }
 
-  async function confirmar() {
-    if (!seleccion.size) return;
-    const b = $('bConfirmar'); b.disabled = true;
+  async function accionPanel(acc) {
+    const p = personas.find((x) => x.id === abierto); if (!p) return;
+    if (acc === 'mas') { contador++; pintarLista(); return; }
+    if (acc === 'menos') { contador = Math.max(0, contador - 1); pintarLista(); return; }
+    if (acc === 'cerrar') { abierto = null; pintarLista(); return; }
+    if (ocupado) return;
+    ocupado = true;
     try {
-      const r = await rpc('marcar_asistencia', { p_token: S.token, p_ids: [...seleccion] });
-      seleccion.clear();
-      let m = `✓ ${r.marcados} ${r.marcados === 1 ? 'asistencia registrada' : 'asistencias registradas'}`;
-      if (r.ya_marcados) m += ` · ${r.ya_marcados} ya estaba${r.ya_marcados === 1 ? '' : 'n'} marcada${r.ya_marcados === 1 ? '' : 's'} por otro encargado`;
-      toast(m, false);
-      await refrescar(true);
+      if (acc === 'confirmar') {
+        const r = await rpc('marcar_asistencia', { p_token: S.token, p_persona_id: p.id, p_familiares: contador });
+        if (r.ok) toast(`✓ ${p.n} registrado con ${famTxt(contador)}`);
+        else toast(`${p.n} ya había sido registrado por ${r.por}`, true);
+        abierto = null;
+      } else if (acc === 'guardar') {
+        await rpc('cambiar_familiares', { p_token: S.token, p_persona_id: p.id, p_familiares: contador });
+        toast(`Familiares actualizados: ${contador}`);
+        abierto = null;
+      } else if (acc === 'quitar') {
+        if (!confirm('¿Quitar la asistencia de ' + p.n + '?')) return;
+        await rpc('quitar_asistencia', { p_token: S.token, p_persona_id: p.id });
+        toast('Asistencia quitada');
+        abierto = null;
+      }
     } catch (e) { toast(e.message, true); }
-    finally { b.disabled = false; }
+    finally { ocupado = false; await refrescar(true).catch(() => {}); }
   }
 
   // ---------------- Administrador ----------------
@@ -242,47 +285,130 @@
     if (id === 'tEnc') cargarEncargados();
     if (id === 'tHist') cargarHistorial();
     if (id === 'tAjustes') cargarGalSin();
+    if (id === 'tRevisar') cargarRevisar();
+  }
+
+  function totales(lista) {
+    const t = { nom: 0, conf: 0, asis: 0, fam: 0, sinConf: 0, cnl: 0, gal: 0, galP: 0 };
+    lista.forEach((p) => {
+      t.nom++;
+      if (p.c) t.conf++;
+      if (p.por) { t.asis++; t.fam += p.fam || 0; if (!p.c) t.sinConf++; }
+      if (p.c && !p.por) t.cnl++;
+      if (p.g) { t.gal++; if (p.por) t.galP++; }
+    });
+    t.total = t.asis + t.fam;
+    return t;
   }
 
   function pintarResumen() {
-    const total = personas.length;
-    const asis = personas.filter((p) => p.por).length;
-    $('sAsis').textContent = asis;
-    $('sTotal').textContent = total;
-    const galTot = personas.filter((p) => p.g).length;
-    $('sGal').textContent = personas.filter((p) => p.g && p.por).length + (galTot ? '/' + galTot : '');
+    const t = totales(personas);
+    $('sNom').textContent = t.nom;
+    $('sConf').textContent = t.conf;
+    $('sAsis').textContent = t.asis;
+    $('sFam').textContent = t.fam;
+    $('sTotal').textContent = t.total;
+    $('sGal').textContent = t.galP + (t.gal ? '/' + t.gal : '');
+    aviso('avisoRev', pendientes ? `Hay ${pendientes} confirmado(s) por revisar: sus nombres no se pudieron cruzar solos con la nómina. Ve a la pestaña "Por revisar".` : '');
     const areas = {};
-    personas.forEach((p) => { const a = (areas[p.a] = areas[p.a] || { t: 0, s: 0 }); a.t++; if (p.por) a.s++; });
+    personas.forEach((p) => (areas[p.a] = areas[p.a] || []).push(p));
     const filas = Object.keys(areas).sort((a, b) => a.localeCompare(b, 'es'));
     $('porArea').innerHTML = filas.length ? filas.map((a) => {
-      const x = areas[a], pct = Math.round((x.s / x.t) * 100);
-      return `<div class="item" style="display:block"><div style="display:flex;justify-content:space-between"><span>${esc(a)}</span><b>${x.s} / ${x.t}</b></div>
+      const x = totales(areas[a]), pct = Math.round((x.asis / x.nom) * 100);
+      return `<div class="item" style="display:block">
+        <div style="display:flex;justify-content:space-between;gap:8px"><span>${esc(a)}</span><b>${x.asis} / ${x.nom}</b></div>
+        <div class="sub">✅ ${x.conf} confirmaron · 👨‍👩‍👧 ${x.fam} familiares · ${x.total} personas en total</div>
         <div class="barra-prog"><i style="width:${pct}%"></i></div></div>`;
-    }).join('') : '<div class="vacio">Sube la lista de personas para empezar.</div>';
+    }).join('') : '<div class="vacio">Sube la nómina para empezar.</div>';
   }
 
   function pintarAsistenciaAdm() {
     const q = norm($('aBuscar').value);
     const filtro = (document.querySelector('input[name=aFiltro]:checked') || {}).value || 'si';
-    let lista = personas.filter((p) => filtro === 'si' ? p.por : filtro === 'no' ? !p.por : p.g);
+    let lista = personas.filter((p) => filtro === 'si' ? p.por : filtro === 'no' ? !p.por : filtro === 'cnl' ? (p.c && !p.por) : p.g);
     if (q) lista = lista.filter((p) => coincide(p, q) || norm(p.a).includes(q));
     if (filtro === 'si') lista.sort((a, b) => String(b.f).localeCompare(String(a.f)));
     const MAX = 400;
     $('aLista').innerHTML = lista.length ? lista.slice(0, MAX).map((p) => `
       <div class="item${p.g ? ' gal' : ''}">
-        <div><b>${esc(p.n)}${p.g ? ' 🏅' : ''}</b>
-          <div class="sub">${esc(p.a)}${p.por ? ' · por ' + esc(p.por) + ' · ' + fecha(p.f) : ' · sin asistencia'}</div></div>
-        ${p.por ? `<button class="enlace" data-quitar="${p.id}">Quitar</button>` : ''}
+        <div><b>${nombreHTML(p)}</b>
+          <div class="sub">${esc(p.a)}${p.por ? ` · 👨‍👩‍👧 ${famTxt(p.fam)} · por ${esc(p.por)} · ${fecha(p.f)}` : (p.c ? ' · confirmó, sin asistencia' : ' · sin asistencia')}</div></div>
+        ${p.por ? `<div class="acciones"><button class="enlace" data-fam="${p.id}">Familiares</button><button class="enlace" data-quitar="${p.id}">Quitar</button></div>` : ''}
       </div>`).join('') + (lista.length > MAX ? `<div class="vacio">Y ${lista.length - MAX} más. Usa el buscador.</div>` : '')
       : '<div class="vacio">No hay registros.</div>';
   }
 
-  async function quitarAdm(ev) {
-    const b = ev.target.closest('[data-quitar]'); if (!b) return;
-    const p = personas.find((x) => x.id === Number(b.dataset.quitar)); if (!p) return;
-    if (!confirm(`¿Quitar la asistencia de ${p.n}?\nLa registró ${p.por}.`)) return;
-    try { await rpc('quitar_asistencia', { p_token: S.token, p_persona_id: p.id }); toast('Asistencia quitada'); await refrescar(true); }
-    catch (e) { toast(e.message, true); }
+  async function accionAsisAdm(ev) {
+    const bq = ev.target.closest('[data-quitar]');
+    const bf = ev.target.closest('[data-fam]');
+    const id = Number((bq || bf || {}).dataset?.quitar || (bf || {}).dataset?.fam);
+    const p = personas.find((x) => x.id === id); if (!p) return;
+    try {
+      if (bq) {
+        if (!confirm(`¿Quitar la asistencia de ${p.n}?\nLa registró ${p.por} con ${famTxt(p.fam)}.`)) return;
+        await rpc('quitar_asistencia', { p_token: S.token, p_persona_id: p.id });
+        toast('Asistencia quitada');
+      } else if (bf) {
+        const v = prompt(`Familiares de ${p.n} (ahora: ${p.fam}):`, p.fam);
+        if (v === null) return;
+        const n = parseInt(v, 10);
+        if (isNaN(n) || n < 0) { toast('Escribe un número válido', true); return; }
+        await rpc('cambiar_familiares', { p_token: S.token, p_persona_id: p.id, p_familiares: n });
+        toast('Familiares actualizados');
+      }
+      await refrescar(true);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  // --- Por revisar
+  let revisar = { pendientes: [], resueltos: [] };
+  async function cargarRevisar() {
+    try { revisar = await rpc('inscritos_revisar', { p_token: S.token }); } catch (e) { toast(e.message, true); return; }
+    const chip = (insId, c) => `<button class="chip" data-asig="${insId}" data-p="${c.id}">${esc(c.n)} <small>· ${esc(c.a)}</small></button>`;
+    $('revLista').innerHTML = revisar.pendientes.length ? revisar.pendientes.map((i) => `
+      <div class="rev">
+        <div class="ins">"${esc(i.n)}"<small>Así se inscribió. ¿Quién es en la nómina?</small></div>
+        <div class="chips">${i.cand.length ? i.cand.map((c) => chip(i.id, c)).join('') : '<span class="sub">Sin sugerencias. Búscalo abajo.</span>'}</div>
+        <input type="search" placeholder="Buscar en la nómina…" data-buscar="${i.id}" autocomplete="off">
+        <div class="chips" id="rb-${i.id}"></div>
+        <button class="enlace" data-nonom="${i.id}" style="margin-top:8px">No está en la nómina</button>
+      </div>`).join('') : '<div class="tarjeta"><div class="vacio">✅ No hay nada por revisar.</div></div>';
+    $('revResueltos').innerHTML = revisar.resueltos.length ? revisar.resueltos.map((i) => `
+      <div class="item"><div><b>"${esc(i.n)}"</b><div class="sub">${i.e === 'manual' ? '→ ' + esc(i.p) + ' · ' + esc(i.a) : 'No está en la nómina'}</div></div>
+      <button class="enlace" data-reabrir="${i.id}">Reabrir</button></div>`).join('') : '<div class="vacio">Ninguno.</div>';
+  }
+
+  function buscarRevisar(ev) {
+    const inp = ev.target.closest('[data-buscar]'); if (!inp) return;
+    const id = inp.dataset.buscar, q = norm(inp.value);
+    const res = q.length < 2 ? [] : personas.filter((p) => coincide(p, q)).slice(0, 8);
+    $('rb-' + id).innerHTML = res.map((c) => `<button class="chip" data-asig="${id}" data-p="${c.id}">${esc(c.n)} <small>· ${esc(c.a)}</small></button>`).join('')
+      || (q.length >= 2 ? '<span class="sub">Sin resultados.</span>' : '');
+  }
+
+  async function accionRevisar(ev) {
+    const a = ev.target.closest('[data-asig]');
+    const nn = ev.target.closest('[data-nonom]');
+    const ra = ev.target.closest('[data-reabrir]');
+    try {
+      if (a) {
+        const ins = revisar.pendientes.find((x) => x.id === Number(a.dataset.asig));
+        const p = personas.find((x) => x.id === Number(a.dataset.p));
+        if (!ins || !p) return;
+        if (!confirm(`¿"${ins.n}" es ${p.n} (${p.a})?`)) return;
+        await rpc('inscrito_resolver', { p_token: S.token, p_id: ins.id, p_accion: 'asignar', p_persona_id: p.id });
+        toast('✅ Cruzado con ' + p.n);
+      } else if (nn) {
+        const ins = revisar.pendientes.find((x) => x.id === Number(nn.dataset.nonom));
+        if (!ins || !confirm(`¿Marcar "${ins.n}" como que no está en la nómina?`)) return;
+        await rpc('inscrito_resolver', { p_token: S.token, p_id: ins.id, p_accion: 'no_nomina' });
+        toast('Marcado como fuera de la nómina');
+      } else if (ra) {
+        await rpc('inscrito_resolver', { p_token: S.token, p_id: Number(ra.dataset.reabrir), p_accion: 'reabrir' });
+        toast('Vuelve a "Por revisar"');
+      } else return;
+      await cargarRevisar(); await refrescar(true);
+    } catch (e) { toast(e.message, true); }
   }
 
   // --- Encargados
@@ -292,7 +418,7 @@
     $('encCuenta').textContent = encargados.length;
     $('encLista').innerHTML = encargados.length ? encargados.map((e) => `
       <div class="item">
-        <div><b>${esc(e.nombre)}</b><div class="sub">PIN ${esc(e.pin)} · ${e.marcados} marcados</div></div>
+        <div><b>${esc(e.nombre)}</b><div class="sub">PIN ${esc(e.pin)} · ${e.marcados} registrados · ${e.familiares} familiares</div></div>
         <div class="acciones">
           ${!e.activo ? '<span class="pill inactivo">inactivo</span>' : e.en_sesion ? '<span class="pill">en sesión</span>' : '<span class="pill off">sin sesión</span>'}
           ${e.en_sesion ? `<button class="enlace" data-liberar="${e.id}">Liberar</button>` : ''}
@@ -357,11 +483,27 @@
     } catch (e) { aviso('ajRes', e.message, true); }
   }
 
+  async function borrar() {
+    const sel = $('borrarQue');
+    const que = sel.value;
+    if (!que) { toast('Elige qué quieres borrar', true); return; }
+    const txt = sel.options[sel.selectedIndex].text;
+    const v = prompt(`Vas a borrar: ${txt}.\nEsto no se puede deshacer.\n\nEscribe BORRAR para confirmar:`);
+    if (v === null) return;
+    if (v.trim().toUpperCase() !== 'BORRAR') { toast('No se borró nada', true); return; }
+    try {
+      await rpc('borrar_listas', { p_token: S.token, p_que: que });
+      toast('Listo, se borró: ' + txt);
+      sel.value = '';
+      await refrescar(true); cargarGalSin();
+    } catch (e) { toast(e.message, true); }
+  }
+
   async function cargarGalSin() {
     try {
       const r = await rpc('galardonados_sin_lista', { p_token: S.token });
       $('galSin').innerHTML = r.length ? r.map((n) => `<div class="item"><span>${esc(n)}</span><button class="enlace" data-galq="${esc(n)}">Quitar</button></div>`).join('')
-        : '<div class="vacio">Todos los galardonados están en la lista.</div>';
+        : '<div class="vacio">Todos los galardonados están en la nómina.</div>';
     } catch (e) { toast(e.message, true); }
   }
   async function quitarGal(ev) {
@@ -384,7 +526,6 @@
           wb.SheetNames.forEach((hoja) => {
             const rows = XLSX.utils.sheet_to_json(wb.Sheets[hoja], { header: 1, defval: '', raw: false });
             if (!rows.length) return;
-            // buscar fila de encabezados en las primeras 15 filas
             let hi = -1, cN = -1, cNs = -1, cAp = -1, cAr = -1;
             for (let i = 0; i < Math.min(15, rows.length) && hi < 0; i++) {
               rows[i].forEach((c, j) => {
@@ -418,71 +559,115 @@
     });
   }
 
+  const TIPOS = {
+    p: { fn: 'subir_personas', que: 'la nómina' },
+    c: { fn: 'subir_confirmados', que: 'la lista de confirmados' },
+    g: { fn: 'subir_galardonados', que: 'la lista de galardonados' }
+  };
+
   async function subir(input, tipo) {
     const file = input.files[0]; input.value = '';
     if (!file) return;
     if (typeof XLSX === 'undefined') { toast('No se cargó el lector de Excel. Revisa tu internet.', true); return; }
     aviso('subirRes', '');
     try {
-      const filas = await leerExcel(file);
+      let filas = await leerExcel(file);
       if (!filas.length) { aviso('subirRes', 'No encontré nombres en el archivo. La columna debe llamarse "Nombre".', true); return; }
+      if (tipo !== 'p') filas = filas.map((f) => ({ nombre: f.nombre }));   // el área de la inscripción se ignora
       const areas = new Set(filas.map((f) => f.area).filter(Boolean));
-      const que = tipo === 'p' ? 'personas' : 'galardonados';
       const ej = filas.slice(0, 3).map((f) => f.nombre).join(', ');
-      if (!confirm(`Se leyeron ${filas.length} nombres${tipo === 'p' ? ` en ${areas.size} área(s)` : ''}.\nEjemplo: ${ej}…\n\n¿Agregarlos a la lista de ${que}?`)) return;
-      const r = await rpc(tipo === 'p' ? 'subir_personas' : 'subir_galardonados', { p_token: S.token, p_filas: filas, p_archivo: file.name });
-      let m = `${file.name}: ${r.nuevos} nuevos agregados, ${r.existentes} ya existían (no se duplicaron).`;
-      if (tipo === 'g' && r.sin_lista) m += ` ${r.sin_lista} galardonado(s) aún no están en la lista de personas (ver Ajustes).`;
+      if (!confirm(`Se leyeron ${filas.length} nombres${tipo === 'p' ? ` en ${areas.size} área(s)` : ''}.\nEjemplo: ${ej}…\n\n¿Agregarlos a ${TIPOS[tipo].que}?`)) return;
+      const r = await rpc(TIPOS[tipo].fn, { p_token: S.token, p_filas: filas, p_archivo: file.name });
+      let m = `${file.name}: ${r.nuevos} nuevos, ${r.existentes} ya existían (no se duplicaron).`;
+      if (tipo === 'p' && r.cruzados) m += ` Además se cruzaron ${r.cruzados} confirmados que estaban pendientes.`;
+      if (tipo === 'c') m += ` ✅ ${r.cruzados} se cruzaron solos con la nómina.` + (r.pendientes ? ` ${r.pendientes} quedaron en "Por revisar".` : '');
+      if (tipo === 'g' && r.sin_lista) m += ` ${r.sin_lista} galardonado(s) aún no están en la nómina (ver Ajustes).`;
       aviso('subirRes', m);
       await refrescar(true);
     } catch (e) { aviso('subirRes', e.message, true); }
   }
 
-  // --- Excel: descargar
+  // --- Excel: descargar (reporte final)
   async function descargar() {
     if (typeof XLSX === 'undefined') { toast('No se cargó el generador de Excel. Revisa tu internet.', true); return; }
     const b = $('bExcel'); b.disabled = true; b.textContent = 'Preparando…';
     try {
       const d = await rpc('exportar', { p_token: S.token });
-      const encab = { font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '0B1650' } }, alignment: { vertical: 'center' } };
+      const encab = { font: { bold: true, color: { rgb: 'FFFFFF' } }, fill: { fgColor: { rgb: '0B1650' } }, alignment: { vertical: 'center', wrapText: true } };
       const rojo = { font: { bold: true, color: { rgb: 'C00000' } } };
-      const hoja = (filas, cols, anchos, esGal) => {
+      const negrita = { font: { bold: true }, fill: { fgColor: { rgb: 'EAD3A3' } } };
+      const hoja = (filas, cols, anchos, opciones) => {
+        const o = opciones || {};
         const ws = XLSX.utils.json_to_sheet(filas, { header: cols });
         cols.forEach((_, c) => { const ref = XLSX.utils.encode_cell({ r: 0, c }); if (ws[ref]) ws[ref].s = encab; });
-        if (esGal) filas.forEach((f, i) => { if (esGal(f)) cols.forEach((_, c) => { const ref = XLSX.utils.encode_cell({ r: i + 1, c }); if (ws[ref]) ws[ref].s = rojo; }); });
+        filas.forEach((f, i) => {
+          const est = o.esGal && o.esGal(f) ? rojo : (o.esTotal && o.esTotal(f) ? negrita : null);
+          if (est) cols.forEach((_, c) => { const ref = XLSX.utils.encode_cell({ r: i + 1, c }); if (ws[ref]) ws[ref].s = est; });
+        });
         ws['!cols'] = anchos.map((w) => ({ wch: w }));
-        ws['!autofilter'] = { ref: ws['!ref'] };
+        if (filas.length) ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: filas.length, c: cols.length - 1 } }) };
         return ws;
       };
+      const si = (v) => (v ? 'Sí' : 'No');
       const gal = (f) => f['Galardonado'] === 'Sí';
-      const asistentes = d.personas.filter((p) => p.por).sort((a, b) => String(a.f).localeCompare(String(b.f)))
-        .map((p) => ({ 'Nombre': p.n, 'Área': p.a, 'Galardonado': p.g ? 'Sí' : 'No', 'Registrado por': p.por, 'Fecha y hora': fecha(p.f) }));
-      const todos = d.personas.map((p) => ({ 'Nombre': p.n, 'Área': p.a, 'Galardonado': p.g ? 'Sí' : 'No', 'Asistió': p.por ? 'Sí' : 'No', 'Registrado por': p.por || '', 'Fecha y hora': fecha(p.f) }));
-      const ar = {};
-      d.personas.forEach((p) => { const x = (ar[p.a] = ar[p.a] || { t: 0, s: 0, g: 0, gs: 0 }); x.t++; if (p.por) x.s++; if (p.g) { x.g++; if (p.por) x.gs++; } });
-      const resumen = Object.keys(ar).sort((a, b) => a.localeCompare(b, 'es')).map((a) => ({
-        'Área': a, 'Total': ar[a].t, 'Asistieron': ar[a].s, 'Faltan': ar[a].t - ar[a].s,
-        '% asistencia': ar[a].t ? Math.round((ar[a].s / ar[a].t) * 100) + '%' : '0%', 'Galardonados': ar[a].g, 'Galardonados presentes': ar[a].gs }));
-      const T = resumen.reduce((s, r) => ({ t: s.t + r['Total'], s: s.s + r['Asistieron'], g: s.g + r['Galardonados'], gs: s.gs + r['Galardonados presentes'] }), { t: 0, s: 0, g: 0, gs: 0 });
-      resumen.push({ 'Área': 'TOTAL', 'Total': T.t, 'Asistieron': T.s, 'Faltan': T.t - T.s, '% asistencia': T.t ? Math.round((T.s / T.t) * 100) + '%' : '0%', 'Galardonados': T.g, 'Galardonados presentes': T.gs });
-      const porEnc = {};
-      d.personas.forEach((p) => { if (p.por) porEnc[p.por] = (porEnc[p.por] || 0) + 1; });
+      const P = d.personas;
+
+      // 1. Resumen por área
+      const grupos = {};
+      P.forEach((p) => (grupos[p.a] = grupos[p.a] || []).push(p));
+      const filaRes = (nombre, lista) => {
+        const t = totales(lista.map((p) => ({ ...p, por: p.por, fam: p.fam || 0 })));
+        return { 'Área': nombre, 'Nómina': t.nom, 'Confirmaron': t.conf, 'Asistieron': t.asis,
+          'Asistieron sin confirmar': t.sinConf, 'Confirmaron y no llegaron': t.cnl, 'Familiares': t.fam,
+          'Total personas en el evento': t.total, '% asistencia': t.nom ? Math.round((t.asis / t.nom) * 100) + '%' : '0%',
+          'Galardonados': t.gal, 'Galardonados presentes': t.galP };
+      };
+      const resumen = Object.keys(grupos).sort((a, b) => a.localeCompare(b, 'es')).map((a) => filaRes(a, grupos[a]));
+      resumen.push(filaRes('TOTAL', P));
+      const colsRes = ['Área', 'Nómina', 'Confirmaron', 'Asistieron', 'Asistieron sin confirmar', 'Confirmaron y no llegaron', 'Familiares', 'Total personas en el evento', '% asistencia', 'Galardonados', 'Galardonados presentes'];
+      const wsRes = hoja(resumen, colsRes, [26, 9, 12, 11, 14, 14, 11, 14, 12, 12, 14], { esTotal: (f) => f['Área'] === 'TOTAL' });
+      const insNoNom = d.inscritos.filter((i) => i.e === 'no_nomina').length;
+      const insPend = d.inscritos.filter((i) => i.e === 'pendiente').length;
+      XLSX.utils.sheet_add_aoa(wsRes, [[], ['Reporte generado', fecha(new Date())],
+        ['Confirmados en la lista de inscripción', d.inscritos.length],
+        ['Confirmados que no están en la nómina', insNoNom],
+        ['Confirmados sin revisar', insPend]], { origin: -1 });
+
+      // 2. Asistentes
+      const asistentes = P.filter((p) => p.por).sort((a, b) => String(a.f).localeCompare(String(b.f)))
+        .map((p) => ({ 'Nombre': p.n, 'Área': p.a, 'Confirmó': si(p.c), 'Galardonado': si(p.g), 'Familiares': p.fam || 0,
+          'Total (persona + familiares)': 1 + (p.fam || 0), 'Registrado por': p.por, 'Fecha y hora': fecha(p.f) }));
+      // 3. Nómina completa
+      const nomina = P.map((p) => ({ 'Nombre': p.n, 'Área': p.a, 'Confirmó': si(p.c), 'Galardonado': si(p.g), 'Asistió': si(p.por),
+        'Familiares': p.por ? (p.fam || 0) : '', 'Registrado por': p.por || '', 'Fecha y hora': fecha(p.f) }));
+      // 4. Confirmaron y no llegaron
+      const cnl = P.filter((p) => p.c && !p.por).map((p) => ({ 'Nombre': p.n, 'Área': p.a, 'Galardonado': si(p.g) }));
+      // 5. Confirmados (cruce)
+      const EST = { auto: 'Cruzado automático', manual: 'Cruzado a mano', pendiente: 'Sin revisar', no_nomina: 'No está en la nómina' };
+      const inscritos = d.inscritos.map((i) => ({ 'Nombre como se inscribió': i.n, 'Resultado': EST[i.e] || i.e, 'Persona en la nómina': i.p || '', 'Área (nómina)': i.a || '' }));
+      // 6. Por encargado
+      const pe = {};
+      P.forEach((p) => { if (p.por) { const x = (pe[p.por] = pe[p.por] || { n: 0, f: 0 }); x.n++; x.f += p.fam || 0; } });
+      const porEnc = Object.keys(pe).sort().map((k) => ({ 'Encargado': k, 'Personas registradas': pe[k].n, 'Familiares': pe[k].f, 'Total': pe[k].n + pe[k].f }));
+      // 7. Historial
       const historial = d.historial.map((h) => ({ 'Fecha y hora': fecha(h.f), 'Usuario': h.u || '', 'Acción': h.a, 'Detalle': h.d || '' }));
 
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, hoja(asistentes, ['Nombre', 'Área', 'Galardonado', 'Registrado por', 'Fecha y hora'], [34, 24, 13, 24, 22], gal), 'Asistentes');
-      XLSX.utils.book_append_sheet(wb, hoja(todos, ['Nombre', 'Área', 'Galardonado', 'Asistió', 'Registrado por', 'Fecha y hora'], [34, 24, 13, 9, 24, 22], gal), 'Lista completa');
-      XLSX.utils.book_append_sheet(wb, hoja(resumen, ['Área', 'Total', 'Asistieron', 'Faltan', '% asistencia', 'Galardonados', 'Galardonados presentes'], [26, 8, 11, 8, 13, 13, 22]), 'Resumen');
-      XLSX.utils.book_append_sheet(wb, hoja(Object.keys(porEnc).sort().map((k) => ({ 'Encargado': k, 'Asistencias registradas': porEnc[k] })), ['Encargado', 'Asistencias registradas'], [28, 22]), 'Por encargado');
-      XLSX.utils.book_append_sheet(wb, hoja(historial, ['Fecha y hora', 'Usuario', 'Acción', 'Detalle'], [22, 24, 30, 50]), 'Historial');
+      XLSX.utils.book_append_sheet(wb, wsRes, 'Resumen');
+      XLSX.utils.book_append_sheet(wb, hoja(asistentes, ['Nombre', 'Área', 'Confirmó', 'Galardonado', 'Familiares', 'Total (persona + familiares)', 'Registrado por', 'Fecha y hora'], [34, 22, 10, 12, 11, 14, 22, 22], { esGal: gal }), 'Asistentes');
+      XLSX.utils.book_append_sheet(wb, hoja(nomina, ['Nombre', 'Área', 'Confirmó', 'Galardonado', 'Asistió', 'Familiares', 'Registrado por', 'Fecha y hora'], [34, 22, 10, 12, 9, 11, 22, 22], { esGal: gal }), 'Nómina completa');
+      XLSX.utils.book_append_sheet(wb, hoja(cnl, ['Nombre', 'Área', 'Galardonado'], [34, 22, 12], { esGal: gal }), 'Confirmaron y no llegaron');
+      XLSX.utils.book_append_sheet(wb, hoja(inscritos, ['Nombre como se inscribió', 'Resultado', 'Persona en la nómina', 'Área (nómina)'], [34, 22, 34, 22]), 'Confirmados (cruce)');
+      XLSX.utils.book_append_sheet(wb, hoja(porEnc, ['Encargado', 'Personas registradas', 'Familiares', 'Total'], [28, 20, 12, 10]), 'Por encargado');
+      XLSX.utils.book_append_sheet(wb, hoja(historial, ['Fecha y hora', 'Usuario', 'Acción', 'Detalle'], [22, 24, 34, 60]), 'Historial');
       if (d.galardonados_sin_lista.length)
-        XLSX.utils.book_append_sheet(wb, hoja(d.galardonados_sin_lista.map((n) => ({ 'Galardonado sin coincidencia en la lista': n })), ['Galardonado sin coincidencia en la lista'], [44]), 'Galardonados sin lista');
+        XLSX.utils.book_append_sheet(wb, hoja(d.galardonados_sin_lista.map((n) => ({ 'Galardonado sin coincidencia en la nómina': n })), ['Galardonado sin coincidencia en la nómina'], [44]), 'Galardonados sin nómina');
 
       const ahora = new Date().toLocaleString('sv-SE', { timeZone: 'America/Guatemala' }).slice(0, 16).replace(' ', '_').replace(':', 'h');
-      XLSX.writeFile(wb, `asistencia_emetra_${ahora}.xlsx`);
+      XLSX.writeFile(wb, `reporte_final_emetra_${ahora}.xlsx`);
       toast('Excel descargado');
     } catch (e) { toast(e.message, true); }
-    finally { b.disabled = false; b.textContent = 'Descargar Excel'; }
+    finally { b.disabled = false; b.textContent = 'Descargar Excel final'; }
   }
 
   // ---------------- Eventos ----------------
@@ -493,26 +678,31 @@
     document.addEventListener('visibilitychange', () => { if (!document.hidden && S) refrescar(true).catch(() => {}); });
 
     // encargado
-    $('eArea').addEventListener('change', pintarLista);
+    $('eArea').addEventListener('change', () => { abierto = null; pintarLista(); });
     $('eBuscar').addEventListener('input', pintarLista);
-    $('eLista').addEventListener('click', tocarFila);
-    $('bConfirmar').addEventListener('click', confirmar);
+    $('eLista').addEventListener('click', clicLista);
 
     // admin
     $('tabs').addEventListener('click', (e) => { const b = e.target.closest('button[data-tab]'); if (b) abrirTab(b.dataset.tab); });
     $('bSubirP').addEventListener('click', () => $('fPersonas').click());
+    $('bSubirC').addEventListener('click', () => $('fConf').click());
     $('bSubirG').addEventListener('click', () => $('fGalard').click());
     $('fPersonas').addEventListener('change', (e) => subir(e.target, 'p'));
+    $('fConf').addEventListener('change', (e) => subir(e.target, 'c'));
     $('fGalard').addEventListener('change', (e) => subir(e.target, 'g'));
     $('bExcel').addEventListener('click', descargar);
     $('aBuscar').addEventListener('input', pintarAsistenciaAdm);
     document.querySelectorAll('input[name=aFiltro]').forEach((r) => r.addEventListener('change', pintarAsistenciaAdm));
-    $('aLista').addEventListener('click', quitarAdm);
+    $('aLista').addEventListener('click', accionAsisAdm);
+    $('revLista').addEventListener('click', accionRevisar);
+    $('revLista').addEventListener('input', buscarRevisar);
+    $('revResueltos').addEventListener('click', accionRevisar);
     $('fEnc').addEventListener('submit', guardarEnc);
     $('bEncCancelar').addEventListener('click', limpiarFormEnc);
     $('encLista').addEventListener('click', accionEnc);
     $('bHistRef').addEventListener('click', cargarHistorial);
     $('fAjustes').addEventListener('submit', guardarAjustes);
+    $('bBorrar').addEventListener('click', borrar);
     $('galSin').addEventListener('click', quitarGal);
   }
 
