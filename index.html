@@ -7,10 +7,10 @@
   <title>Familia EMETRA · Control de asistencia</title>
   <link rel="icon" type="image/png" href="img/icono.png">
   <link rel="apple-touch-icon" href="img/icono.png">
-  <link rel="stylesheet" href="css/estilos.css">
+  <link rel="stylesheet" href="css/estilos.css?v=2">
   <script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js" defer></script>
-  <script src="js/config.js" defer></script>
-  <script src="js/app.js" defer></script>
+  <script src="js/config.js?v=2" defer></script>
+  <script src="js/app.js?v=2" defer></script>
 </head>
 <body>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -45,11 +45,9 @@
       <label for="eBuscar">Buscar nombre</label>
       <input id="eBuscar" type="search" placeholder="Escribe una letra…" autocomplete="off" autocapitalize="off">
       <p class="contador" id="eCont"></p>
+      <p class="leyenda">✅ Confirmó · 🏅 Galardonado · Toca un nombre para registrarlo</p>
     </div>
     <div id="eLista"></div>
-    <div class="barra hide" id="eBarra">
-      <button class="btn lima" type="button" id="bConfirmar"></button>
-    </div>
   </section>
 
   <!-- ================= ADMINISTRADOR ================= -->
@@ -63,6 +61,7 @@
     <nav class="pestanas" id="tabs">
       <button data-tab="tResumen" class="activa">Resumen</button>
       <button data-tab="tAsis">Asistencia</button>
+      <button data-tab="tRevisar">Por revisar <span class="globo hide" id="globoRev">0</span></button>
       <button data-tab="tEnc">Encargados</button>
       <button data-tab="tHist">Historial</button>
       <button data-tab="tAjustes">Ajustes</button>
@@ -71,17 +70,23 @@
     <!-- Resumen -->
     <div id="tResumen" class="tab">
       <div class="stats">
+        <div class="stat"><b id="sNom">0</b><span>Nómina</span></div>
+        <div class="stat"><b class="verde-txt" id="sConf">0</b><span>✅ Confirmaron</span></div>
         <div class="stat"><b class="lima-txt" id="sAsis">0</b><span>Asistieron</span></div>
-        <div class="stat"><b id="sTotal">0</b><span>Total</span></div>
-        <div class="stat"><b class="rojo-txt" id="sGal">0</b><span>Galardonados presentes</span></div>
+        <div class="stat"><b id="sFam">0</b><span>Familiares</span></div>
+        <div class="stat"><b class="dorado-txt" id="sTotal">0</b><span>Total en el evento</span></div>
+        <div class="stat"><b class="rojo-txt" id="sGal">0</b><span>🏅 Galardonados presentes</span></div>
       </div>
-      <button class="btn" type="button" id="bSubirP">Subir lista de personas</button>
+      <div id="avisoRev" class="aviso hide"></div>
+      <button class="btn" type="button" id="bSubirP">Subir nómina</button>
+      <button class="btn borde" type="button" id="bSubirC">Subir lista de confirmados</button>
       <button class="btn borde" type="button" id="bSubirG">Subir lista de galardonados</button>
-      <button class="btn lima" type="button" id="bExcel">Descargar Excel</button>
+      <button class="btn lima" type="button" id="bExcel">Descargar Excel final</button>
       <input type="file" id="fPersonas" accept=".xlsx,.xls,.csv" class="hide">
+      <input type="file" id="fConf" accept=".xlsx,.xls,.csv" class="hide">
       <input type="file" id="fGalard" accept=".xlsx,.xls,.csv" class="hide">
       <div id="subirRes" class="aviso hide"></div>
-      <p class="nota">Al subir una lista se agregan solo los nombres nuevos. Los que ya existen no se duplican y conservan su asistencia.</p>
+      <p class="nota">Al subir una lista se agregan solo los nombres nuevos. Los existentes no se duplican y conservan su asistencia.</p>
       <h3>Por área</h3>
       <div class="tarjeta" id="porArea"></div>
     </div>
@@ -92,10 +97,19 @@
       <input id="aBuscar" type="search" placeholder="Nombre o área" autocomplete="off">
       <div class="filtros">
         <label><input type="radio" name="aFiltro" value="si" checked> Asistieron</label>
+        <label><input type="radio" name="aFiltro" value="cnl"> Confirmaron y no llegaron</label>
         <label><input type="radio" name="aFiltro" value="no"> Faltan</label>
         <label><input type="radio" name="aFiltro" value="g"> Galardonados</label>
       </div>
       <div class="tarjeta" id="aLista"></div>
+    </div>
+
+    <!-- Por revisar -->
+    <div id="tRevisar" class="tab hide">
+      <p class="nota" style="text-align:left">Nombres de la lista de confirmados que no se pudieron cruzar solos con la nómina. Elige a la persona correcta, búscala, o márcala como "No está en la nómina".</p>
+      <div id="revLista"></div>
+      <h3>Resueltos a mano</h3>
+      <div class="tarjeta" id="revResueltos"></div>
     </div>
 
     <!-- Encargados -->
@@ -121,7 +135,7 @@
     <!-- Historial -->
     <div id="tHist" class="tab hide">
       <button class="btn borde chico" type="button" id="bHistRef">Actualizar</button>
-      <p class="nota">Últimos 300 movimientos. El Excel incluye el historial completo.</p>
+      <p class="nota">Últimos 300 movimientos. El Excel final incluye el historial completo.</p>
       <div class="tarjeta" id="histLista"></div>
     </div>
 
@@ -137,8 +151,24 @@
         </form>
         <div id="ajRes" class="aviso hide"></div>
       </div>
-      <h3>Galardonados que no están en la lista</h3>
-      <p class="nota">Nombres de la lista de galardonados que todavía no aparecen en la lista de personas. Revisa si están mal escritos.</p>
+
+      <h3>Borrar listas</h3>
+      <div class="tarjeta">
+        <p class="nota" style="text-align:left;margin-top:0">Descarga el Excel final antes de borrar. Esto no se puede deshacer. Los encargados y el historial se conservan.</p>
+        <label for="borrarQue">¿Qué quieres borrar?</label>
+        <select id="borrarQue">
+          <option value="">Elige una opción…</option>
+          <option value="asistencia">Solo las asistencias marcadas</option>
+          <option value="confirmados">Solo la lista de confirmados</option>
+          <option value="galardonados">Solo la lista de galardonados</option>
+          <option value="nomina">La nómina (y sus asistencias)</option>
+          <option value="todo">Todo: nómina, confirmados, galardonados y asistencias</option>
+        </select>
+        <button class="btn peligro" type="button" id="bBorrar">Borrar</button>
+      </div>
+
+      <h3>Galardonados que no están en la nómina</h3>
+      <p class="nota" style="text-align:left">Revisa si están mal escritos.</p>
       <div class="tarjeta" id="galSin"></div>
     </div>
   </section>

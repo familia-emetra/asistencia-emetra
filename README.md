@@ -1,6 +1,6 @@
 # Familia EMETRA · Control de asistencia
 
-Página para celular donde hasta 15 encargados marcan la asistencia de una lista de personas. El administrador sube las listas en Excel, ve el historial de todo lo que pasa y descarga los reportes.
+Página para celular donde hasta 15 encargados registran la asistencia de la nómina y cuántos familiares llega con cada persona. El administrador sube la nómina, la lista de confirmados y la de galardonados en Excel, ve el historial de todo lo que pasa y descarga el reporte final.
 
 - **Página:** GitHub Pages (gratis)
 - **Base de datos:** Supabase (gratis)
@@ -50,71 +50,68 @@ La llave pública se puede publicar sin problema: la página no lee las tablas d
 
 ---
 
-## Cómo debe ser el Excel
+## Las tres listas
 
-La página busca los encabezados en las primeras filas. Puede haber un título arriba.
+| Lista | Qué es | Columnas |
+|---|---|---|
+| **Nómina** | Todos los invitados. Es la lista base. | `Nombre` y `Área` (o `Nombres` + `Apellidos`, `Departamento`…) |
+| **Confirmados** | Quienes se inscribieron en la invitación | Solo `Nombre`. El área se ignora. |
+| **Galardonados** | Quienes reciben reconocimiento | Solo `Nombre` |
 
-| Columna | Nombres que reconoce |
-|---|---|
-| Nombre | `Nombre`, `Nombre completo`… o dos columnas `Nombres` y `Apellidos` (se unen) |
-| Área | `Área`, `Departamento`, `Depto`, `Dependencia`, `Unidad`, `Sección`, `Dirección` |
+- Puedes subir cualquier lista varias veces: solo se agregan los nombres nuevos.
+- Los nombres se comparan sin tildes, mayúsculas ni signos.
+- **Cruce de confirmados:** si el nombre coincide exacto, o si todas sus palabras aparecen en un solo nombre de la nómina ("Ana López" → "Ana Lucía López Pérez"), se cruza solo. Si es dudoso, va a la pestaña **Por revisar**, donde eliges a la persona con un toque o lo marcas como "No está en la nómina".
 
-- Si el archivo tiene **varias hojas** y no trae columna de área, se usa el nombre de cada hoja como área.
-- Si no hay encabezados, se toma la columna A como nombre y la B como área.
-- La lista de **galardonados** solo necesita la columna `Nombre`.
-- Antes de subir, la página muestra cuántos nombres leyó y pide confirmación.
+## En la entrada (encargados)
 
-**Sin duplicados:** los nombres se comparan sin tildes, mayúsculas, signos ni espacios de más. Por ejemplo, "JOSÉ  Pérez." y "jose perez" son la misma persona. Puedes subir listas nuevas cuando quieras: solo se agregan las personas que faltan, y las demás conservan su asistencia.
-
----
+- ✅ junto al nombre = confirmó · 🏅 en rojo = galardonado.
+- Toca el nombre, ajusta los **familiares** con – / + y pulsa **Confirmar asistencia**.
+- Si no confirmó, aparece un aviso, pero se le puede registrar igual.
+- Para corregir los familiares o quitar la asistencia, toca el nombre otra vez. Solo puede hacerlo quien lo registró, o el administrador.
 
 ## Reglas de uso
 
 | | Encargado | Administrador |
 |---|---|---|
-| Buscar por área y nombre | ✅ | ✅ |
-| Marcar asistencia | ✅ | — |
-| Quitar asistencia | Solo la que **él mismo** marcó | Cualquiera |
-| Subir listas | — | ✅ |
-| Ver historial y descargar Excel | — | ✅ |
+| Buscar y registrar asistencia con familiares | ✅ | — |
+| Corregir familiares o quitar asistencia | Solo lo que **él mismo** registró | Todo |
+| Subir y borrar listas, revisar el cruce | — | ✅ |
+| Ver historial y descargar el Excel final | — | ✅ |
 | Crear, editar y desactivar encargados (máx. 15) | — | ✅ |
 
 - **Una sesión por PIN:** si un encargado ya entró en un celular, nadie puede entrar con ese PIN en otro.
-- La sesión se cierra sola tras **30 minutos sin actividad**. Puedes cambiar ese tiempo en Ajustes.
-- Si un celular se apaga o se pierde, en **Encargados** pulsa **Liberar**.
-- Recargar la página no cierra la sesión.
+- La sesión se cierra sola tras **30 minutos sin actividad** (se cambia en Ajustes). Si un celular se apaga, en **Encargados** pulsa **Liberar**.
 - Tras **5 PIN incorrectos** en 10 minutos, ese nombre queda bloqueado 10 minutos.
-- Los galardonados aparecen en **rojo** con 🏅.
-- **Todo queda en el historial:** ingresos, intentos fallidos, marcas, quitadas, subidas de listas, cambios de encargados y descargas.
+- **Todo queda en el historial.**
 
-## El Excel que descargas
+## El Excel final
 
 | Pestaña | Contenido |
 |---|---|
-| Asistentes | Quienes asistieron, en orden de llegada, con quién los registró y la hora. Galardonados en rojo. |
-| Lista completa | Todas las personas, con su asistencia (Sí/No) |
-| Resumen | Totales y porcentaje por área |
-| Por encargado | Cuántas asistencias registró cada encargado |
-| Historial | Cada movimiento realizado en la página |
-| Galardonados sin lista | Solo aparece si algún galardonado no coincide con la lista (revisa la ortografía) |
+| Resumen | Por área y total: nómina, confirmaron, asistieron, asistieron sin confirmar, confirmaron y no llegaron, familiares, **total de personas en el evento**, % de asistencia y galardonados |
+| Asistentes | En orden de llegada: familiares, quién lo registró y la hora. Galardonados en rojo. |
+| Nómina completa | Toda la nómina con su estado |
+| Confirmaron y no llegaron | Para seguimiento |
+| Confirmados (cruce) | Cómo se cruzó cada nombre de la inscripción con la nómina |
+| Por encargado | Personas y familiares que registró cada encargado |
+| Historial | Cada movimiento con fecha y hora |
+
+## Borrar listas
+
+En **Ajustes → Borrar listas** eliges qué borrar y confirmas escribiendo BORRAR. Descarga antes el Excel final. Los encargados y el historial se conservan.
 
 ---
 
 ## Preguntas frecuentes
 
 **¿Cómo empiezo un evento nuevo desde cero?**
-En Supabase, abre **SQL Editor** y ejecuta:
+En **Ajustes → Borrar listas → Todo**. Si además quieres borrar el historial, ejecuta en Supabase → SQL Editor: `truncate historial;`
 
-```sql
-truncate asistencia, historial, sesiones;            -- borra asistencia e historial
--- truncate personas, galardonados cascade;          -- (opcional) borra también las listas
-```
-
-Descarga antes el Excel si quieres guardar el registro.
+**¿Cómo actualizo la base de datos a una versión nueva?**
+Ejecuta otra vez el archivo `supabase/esquema.sql` completo en el SQL Editor. No borra datos.
 
 **Supabase pausó mi proyecto.**
 Los proyectos gratuitos se pausan tras una semana sin uso. Entra a supabase.com y pulsa **Restore**. Los datos no se pierden.
 
 **¿Cambio algo del diseño?**
 Los colores están al inicio de `css/estilos.css` y el logo en `img/logo.png`.
-Página: https://familia-emetra.github.io/asistencia-emetra/
