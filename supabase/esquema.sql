@@ -1,9 +1,10 @@
 -- =====================================================================
---  FAMILIA EMETRA · CONTROL DE ASISTENCIA
---  Ejecuta TODO este archivo una sola vez en:
---  Supabase → SQL Editor → New query → pegar → Run
+--  FAMILIA EMETRA · CONTROL DE ASISTENCIA  (versión 2)
+--  Supabase → SQL Editor → New query → pegar TODO → Run
 --
---  PIN inicial del administrador: 0000  (cámbialo en Ajustes al entrar)
+--  Se puede ejecutar en un proyecto nuevo o encima de la versión 1:
+--  no borra datos, encargados ni el PIN del administrador.
+--  PIN inicial del administrador (solo en proyecto nuevo): 0000
 -- =====================================================================
 
 -- ---------- TABLAS ----------
@@ -14,10 +15,10 @@ create table if not exists config (
 );
 insert into config (id, admin_pin) values (1, '0000') on conflict (id) do nothing;
 
-create table if not exists personas (
+create table if not exists personas (            -- NÓMINA
   id      bigserial primary key,
   nombre  text not null,
-  clave   text not null unique,          -- nombre normalizado (sin tildes, minúsculas, solo letras)
+  clave   text not null unique,
   area    text not null default 'Sin área',
   creado  timestamptz not null default now()
 );
@@ -27,6 +28,17 @@ create table if not exists galardonados (
   nombre  text not null,
   creado  timestamptz not null default now()
 );
+
+create table if not exists inscritos (            -- CONFIRMADOS (lista de inscripción)
+  id         bigserial primary key,
+  nombre     text not null,
+  clave      text not null unique,
+  persona_id bigint references personas(id) on delete set null,
+  estado     text not null default 'pendiente'
+             check (estado in ('auto', 'manual', 'pendiente', 'no_nomina')),
+  creado     timestamptz not null default now()
+);
+create index if not exists inscritos_persona_idx on inscritos (persona_id);
 
 create table if not exists encargados (
   id      bigserial primary key,
@@ -52,6 +64,7 @@ create table if not exists asistencia (
   registrado_por text not null,
   fecha          timestamptz not null default now()
 );
+alter table asistencia add column if not exists familiares int not null default 0;
 
 create table if not exists historial (
   id       bigserial primary key,
@@ -62,14 +75,17 @@ create table if not exists historial (
 );
 create index if not exists historial_fecha_idx on historial (fecha desc);
 
--- Nadie entra a las tablas directamente: todo pasa por las funciones de abajo.
 alter table config       enable row level security;
 alter table personas     enable row level security;
 alter table galardonados enable row level security;
+alter table inscritos    enable row level security;
 alter table encargados   enable row level security;
 alter table sesiones     enable row level security;
 alter table asistencia   enable row level security;
 alter table historial    enable row level security;
+
+-- Funciones de la versión 1 que cambiaron de forma
+drop function if exists marcar_asistencia(uuid, bigint[]);
 
 -- ---------- UTILIDADES INTERNAS ----------
 create or replace function norm(t text) returns text
@@ -117,6 +133,41 @@ begin
   return s;
 end $$;
 
+create or replace function _confirmo(p_persona_id bigint) returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from inscritos where persona_id = p_persona_id and estado in ('auto', 'manual'));
+$$;
+
+-- Busca en la nómina a quién corresponde un nombre inscrito.
+-- Devuelve el id solo si hay UNA coincidencia segura; si no, null (queda "por revisar").
+create or replace function _emparejar(p_clave text) returns bigint
+language plpgsql stable security definer set search_path = public as $$
+declare v_w text[] := string_to_array(p_clave, ' '); v_id bigint; v_n int;
+begin
+  select id into v_id from personas where clave = p_clave;
+  if found then return v_id; end if;
+  if coalesce(array_length(v_w, 1), 0) < 2 then return null; end if;
+  select count(*), min(id) into v_n, v_id from personas p
+   where string_to_array(p.clave, ' ') @> v_w
+      or (array_length(string_to_array(p.clave, ' '), 1) >= 2 and v_w @> string_to_array(p.clave, ' '));
+  if v_n = 1 then return v_id; end if;
+  return null;
+end $$;
+
+create or replace function _reemparejar() returns int
+language plpgsql security definer set search_path = public as $$
+declare r record; v bigint; n int := 0;
+begin
+  for r in select id, clave from inscritos where estado = 'pendiente' loop
+    v := _emparejar(r.clave);
+    if v is not null then
+      update inscritos set persona_id = v, estado = 'auto' where id = r.id;
+      n := n + 1;
+    end if;
+  end loop;
+  return n;
+end $$;
+
 -- ---------- SESIÓN ----------
 create or replace function iniciar_sesion(p_nombre text, p_pin text) returns json
 language plpgsql security definer set search_path = public as $$
@@ -128,8 +179,6 @@ begin
   if v_clave = '' or coalesce(p_pin, '') = '' then
     return json_build_object('ok', false, 'error', 'DATOS_INCOMPLETOS');
   end if;
-
-  -- Bloqueo: 5 intentos fallidos en 10 minutos para ese nombre
   if (select count(*) from historial
        where accion = 'Intento de ingreso fallido' and norm(usuario) = v_clave
          and fecha > now() - interval '10 minutes') >= 5 then
@@ -187,36 +236,59 @@ begin
     'rol', case when s.es_admin then 'admin' else 'encargado' end,
     'nombre', s.nombre,
     'timeout', (select timeout_min from config where id = 1),
+    'pendientes', case when s.es_admin then (select count(*) from inscritos where estado = 'pendiente') else 0 end,
     'personas', coalesce((
       select json_agg(json_build_object(
                'id', p.id, 'n', p.nombre, 'a', p.area,
                'g', g.clave is not null,
+               'c', p.id in (select persona_id from inscritos where estado in ('auto', 'manual') and persona_id is not null),
                'por', a.registrado_por,
                'mio', coalesce(a.encargado_id = s.encargado_id, false),
+               'fam', a.familiares,
                'f', a.fecha) order by p.clave)
       from personas p
       left join galardonados g on g.clave = p.clave
       left join asistencia  a on a.persona_id = p.id), '[]'::json));
 end $$;
 
-create or replace function marcar_asistencia(p_token uuid, p_ids bigint[]) returns json
+create or replace function marcar_asistencia(p_token uuid, p_persona_id bigint, p_familiares int default 0) returns json
 language plpgsql security definer set search_path = public as $$
-declare s sesiones; r record; v_n int := 0; v_ya int := 0;
+declare s sesiones; v_nom text; v_por text; v_fam int := coalesce(p_familiares, 0);
 begin
   s := _sesion(p_token);
   if s.es_admin then raise exception 'SOLO_ENCARGADOS'; end if;
-  for r in select id, nombre from personas where id = any(p_ids) order by clave loop
-    insert into asistencia (persona_id, encargado_id, registrado_por)
-      values (r.id, s.encargado_id, s.nombre)
-      on conflict (persona_id) do nothing;
-    if found then
-      v_n := v_n + 1;
-      perform _log(s.nombre, 'Marcó asistencia', r.nombre);
-    else
-      v_ya := v_ya + 1;
-    end if;
-  end loop;
-  return json_build_object('marcados', v_n, 'ya_marcados', v_ya);
+  if v_fam < 0 or v_fam > 200 then raise exception 'FAMILIARES_INVALIDO'; end if;
+  select nombre into v_nom from personas where id = p_persona_id;
+  if not found then raise exception 'NO_EXISTE'; end if;
+
+  insert into asistencia (persona_id, encargado_id, registrado_por, familiares)
+    values (p_persona_id, s.encargado_id, s.nombre, v_fam)
+    on conflict (persona_id) do nothing;
+  if not found then
+    select registrado_por into v_por from asistencia where persona_id = p_persona_id;
+    return json_build_object('ok', false, 'por', v_por);
+  end if;
+
+  perform _log(s.nombre, 'Marcó asistencia',
+    v_nom || ' · ' || v_fam || case when v_fam = 1 then ' familiar' else ' familiares' end
+    || case when _confirmo(p_persona_id) then '' else ' · no había confirmado' end);
+  return json_build_object('ok', true);
+end $$;
+
+create or replace function cambiar_familiares(p_token uuid, p_persona_id bigint, p_familiares int) returns json
+language plpgsql security definer set search_path = public as $$
+declare s sesiones; a asistencia; v_nom text;
+begin
+  s := _sesion(p_token);
+  if p_familiares is null or p_familiares < 0 or p_familiares > 200 then raise exception 'FAMILIARES_INVALIDO'; end if;
+  select * into a from asistencia where persona_id = p_persona_id;
+  if not found then raise exception 'NO_MARCADO'; end if;
+  if not s.es_admin and a.encargado_id is distinct from s.encargado_id then raise exception 'NO_PERMITIDO'; end if;
+  if a.familiares = p_familiares then return json_build_object('ok', true); end if;
+  select nombre into v_nom from personas where id = p_persona_id;
+  update asistencia set familiares = p_familiares where persona_id = p_persona_id;
+  perform _log(s.nombre, 'Cambió familiares', format('%s: de %s a %s', v_nom, a.familiares, p_familiares));
+  return json_build_object('ok', true);
 end $$;
 
 create or replace function quitar_asistencia(p_token uuid, p_persona_id bigint) returns json
@@ -232,14 +304,15 @@ begin
   select nombre into v_nombre from personas where id = p_persona_id;
   delete from asistencia where persona_id = p_persona_id;
   perform _log(s.nombre, 'Quitó asistencia',
-    v_nombre || case when s.es_admin then ' (registrada por ' || a.registrado_por || ')' else '' end);
+    v_nombre || ' (tenía ' || a.familiares || ' familiares)'
+    || case when s.es_admin then ' · registrada por ' || a.registrado_por else '' end);
   return json_build_object('ok', true);
 end $$;
 
 -- ---------- ADMINISTRADOR: LISTAS ----------
 create or replace function subir_personas(p_token uuid, p_filas json, p_archivo text default null) returns json
 language plpgsql security definer set search_path = public as $$
-declare s sesiones; f json; v_nom text; v_area text; v_n int := 0; v_e int := 0; v_v int := 0;
+declare s sesiones; f json; v_nom text; v_area text; v_n int := 0; v_e int := 0; v_v int := 0; v_cruz int;
 begin
   s := _admin(p_token);
   for f in select * from json_array_elements(p_filas) loop
@@ -258,9 +331,86 @@ begin
       end if;
     end if;
   end loop;
-  perform _log(s.nombre, 'Subió lista de personas',
-    format('%s%s nuevas, %s ya existían', coalesce(p_archivo || ': ', ''), v_n, v_e));
-  return json_build_object('nuevos', v_n, 'existentes', v_e, 'vacios', v_v);
+  v_cruz := _reemparejar();
+  perform _log(s.nombre, 'Subió nómina',
+    format('%s%s nuevas, %s ya existían', coalesce(p_archivo || ': ', ''), v_n, v_e)
+    || case when v_cruz > 0 then format(', %s confirmados se cruzaron', v_cruz) else '' end);
+  return json_build_object('nuevos', v_n, 'existentes', v_e, 'vacios', v_v, 'cruzados', v_cruz);
+end $$;
+
+create or replace function subir_confirmados(p_token uuid, p_filas json, p_archivo text default null) returns json
+language plpgsql security definer set search_path = public as $$
+declare s sesiones; f json; v_nom text; v_clave text; v_id bigint; v_p bigint;
+        v_n int := 0; v_e int := 0; v_auto int := 0; v_pend int := 0;
+begin
+  s := _admin(p_token);
+  for f in select * from json_array_elements(p_filas) loop
+    v_nom := limpiar(f->>'nombre'); v_clave := norm(v_nom);
+    if v_clave = '' then continue; end if;
+    v_id := null;
+    insert into inscritos (nombre, clave) values (v_nom, v_clave)
+      on conflict (clave) do nothing returning id into v_id;
+    if v_id is null then v_e := v_e + 1; continue; end if;
+    v_n := v_n + 1;
+    v_p := _emparejar(v_clave);
+    if v_p is not null then
+      update inscritos set persona_id = v_p, estado = 'auto' where id = v_id;
+      v_auto := v_auto + 1;
+    else
+      v_pend := v_pend + 1;
+    end if;
+  end loop;
+  perform _log(s.nombre, 'Subió lista de confirmados',
+    format('%s%s nuevos (%s cruzados, %s por revisar), %s ya existían',
+           coalesce(p_archivo || ': ', ''), v_n, v_auto, v_pend, v_e));
+  return json_build_object('nuevos', v_n, 'existentes', v_e, 'cruzados', v_auto, 'pendientes', v_pend);
+end $$;
+
+create or replace function inscritos_revisar(p_token uuid) returns json
+language plpgsql security definer set search_path = public as $$
+declare s sesiones;
+begin
+  s := _admin(p_token);
+  return json_build_object(
+    'pendientes', coalesce((
+      select json_agg(json_build_object('id', i.id, 'n', i.nombre, 'cand', coalesce((
+        select json_agg(json_build_object('id', t.id, 'n', t.nombre, 'a', t.area))
+        from (select c.* from (select p.id, p.nombre, p.area,
+                (select count(*) from unnest(string_to_array(p.clave, ' ')) w
+                  where length(w) > 2 and w = any(string_to_array(i.clave, ' '))) as comunes
+              from personas p) c
+              where c.comunes >= 1
+              order by c.comunes desc, c.nombre
+              limit 6) t), '[]'::json)) order by i.nombre)
+      from inscritos i where i.estado = 'pendiente'), '[]'::json),
+    'resueltos', coalesce((
+      select json_agg(json_build_object('id', i.id, 'n', i.nombre, 'e', i.estado, 'p', p.nombre, 'a', p.area) order by i.nombre)
+      from inscritos i left join personas p on p.id = i.persona_id
+      where i.estado in ('manual', 'no_nomina')), '[]'::json));
+end $$;
+
+create or replace function inscrito_resolver(p_token uuid, p_id bigint, p_accion text, p_persona_id bigint default null) returns json
+language plpgsql security definer set search_path = public as $$
+declare s sesiones; i inscritos; v_p text;
+begin
+  s := _admin(p_token);
+  select * into i from inscritos where id = p_id;
+  if not found then raise exception 'NO_EXISTE'; end if;
+  if p_accion = 'asignar' then
+    select nombre into v_p from personas where id = p_persona_id;
+    if v_p is null then raise exception 'NO_EXISTE'; end if;
+    update inscritos set persona_id = p_persona_id, estado = 'manual' where id = p_id;
+    perform _log(s.nombre, 'Cruzó confirmado a mano', format('"%s" → %s', i.nombre, v_p));
+  elsif p_accion = 'no_nomina' then
+    update inscritos set persona_id = null, estado = 'no_nomina' where id = p_id;
+    perform _log(s.nombre, 'Marcó confirmado como no está en nómina', i.nombre);
+  elsif p_accion = 'reabrir' then
+    update inscritos set persona_id = null, estado = 'pendiente' where id = p_id;
+    perform _log(s.nombre, 'Reabrió confirmado para revisar', i.nombre);
+  else
+    raise exception 'ACCION_INVALIDA';
+  end if;
+  return json_build_object('ok', true);
 end $$;
 
 create or replace function subir_galardonados(p_token uuid, p_filas json, p_archivo text default null) returns json
@@ -286,8 +436,8 @@ declare s sesiones; g galardonados;
 begin
   s := _admin(p_token);
   delete from galardonados where clave = norm(p_nombre) returning * into g;
-  if found then perform _log(s.nombre, 'Quitó galardonado', g.nombre); end if;
-  return json_build_object('ok', found);
+  if g.clave is not null then perform _log(s.nombre, 'Quitó galardonado', g.nombre); end if;
+  return json_build_object('ok', g.clave is not null);
 end $$;
 
 create or replace function galardonados_sin_lista(p_token uuid) returns json
@@ -297,6 +447,34 @@ begin
   s := _admin(p_token);
   return coalesce((select json_agg(g.nombre order by g.clave) from galardonados g
     where not exists (select 1 from personas p where p.clave = g.clave)), '[]'::json);
+end $$;
+
+create or replace function borrar_listas(p_token uuid, p_que text) returns json
+language plpgsql security definer set search_path = public as $$
+declare s sesiones; v_n int;
+begin
+  s := _admin(p_token);
+  if p_que = 'asistencia' then
+    select count(*) into v_n from asistencia; delete from asistencia;
+    perform _log(s.nombre, 'Borró todas las asistencias', v_n || ' registros');
+  elsif p_que = 'confirmados' then
+    select count(*) into v_n from inscritos; delete from inscritos;
+    perform _log(s.nombre, 'Borró la lista de confirmados', v_n || ' nombres');
+  elsif p_que = 'galardonados' then
+    select count(*) into v_n from galardonados; delete from galardonados;
+    perform _log(s.nombre, 'Borró la lista de galardonados', v_n || ' nombres');
+  elsif p_que = 'nomina' then
+    select count(*) into v_n from personas;
+    delete from personas;                       -- también borra sus asistencias
+    update inscritos set persona_id = null, estado = 'pendiente' where estado in ('auto', 'manual');
+    perform _log(s.nombre, 'Borró la nómina y sus asistencias', v_n || ' personas');
+  elsif p_que = 'todo' then
+    delete from asistencia; delete from inscritos; delete from galardonados; delete from personas;
+    perform _log(s.nombre, 'Borró todas las listas y asistencias', 'El historial se conserva');
+  else
+    raise exception 'ACCION_INVALIDA';
+  end if;
+  return json_build_object('ok', true);
 end $$;
 
 -- ---------- ADMINISTRADOR: ENCARGADOS ----------
@@ -311,7 +489,8 @@ begin
       'id', e.id, 'nombre', e.nombre, 'pin', e.pin, 'activo', e.activo,
       'en_sesion', exists (select 1 from sesiones x where x.encargado_id = e.id
                             and x.ultimo >= now() - make_interval(mins => v_t)),
-      'marcados', (select count(*) from asistencia a where a.encargado_id = e.id)
+      'marcados', (select count(*) from asistencia a where a.encargado_id = e.id),
+      'familiares', (select coalesce(sum(a.familiares), 0) from asistencia a where a.encargado_id = e.id)
     ) order by e.nombre)
     from encargados e), '[]'::json);
 end $$;
@@ -331,7 +510,6 @@ begin
   if exists (select 1 from encargados where clave = v_clave and id is distinct from p_id) then
     raise exception 'NOMBRE_EN_USO';
   end if;
-
   if p_id is null then
     if (select count(*) from encargados) >= 15 then raise exception 'LIMITE_15'; end if;
     insert into encargados (nombre, clave, pin) values (v_nom, v_clave, p_pin) returning id into v_id;
@@ -379,10 +557,14 @@ begin
     'personas', coalesce((
       select json_agg(json_build_object(
         'n', p.nombre, 'a', p.area, 'g', g.clave is not null,
-        'por', a.registrado_por, 'f', a.fecha) order by p.area, p.clave)
+        'c', p.id in (select persona_id from inscritos where estado in ('auto', 'manual') and persona_id is not null),
+        'por', a.registrado_por, 'fam', a.familiares, 'f', a.fecha) order by p.area, p.clave)
       from personas p
       left join galardonados g on g.clave = p.clave
       left join asistencia  a on a.persona_id = p.id), '[]'::json),
+    'inscritos', coalesce((
+      select json_agg(json_build_object('n', i.nombre, 'e', i.estado, 'p', p.nombre, 'a', p.area) order by i.nombre)
+      from inscritos i left join personas p on p.id = i.persona_id), '[]'::json),
     'galardonados_sin_lista', coalesce((
       select json_agg(g.nombre order by g.clave) from galardonados g
       where not exists (select 1 from personas p where p.clave = g.clave)), '[]'::json),
@@ -419,12 +601,17 @@ grant execute on function
   iniciar_sesion(text, text),
   cerrar_sesion(uuid),
   listar_personas(uuid, boolean),
-  marcar_asistencia(uuid, bigint[]),
+  marcar_asistencia(uuid, bigint, int),
+  cambiar_familiares(uuid, bigint, int),
   quitar_asistencia(uuid, bigint),
   subir_personas(uuid, json, text),
+  subir_confirmados(uuid, json, text),
+  inscritos_revisar(uuid),
+  inscrito_resolver(uuid, bigint, text, bigint),
   subir_galardonados(uuid, json, text),
   quitar_galardonado(uuid, text),
   galardonados_sin_lista(uuid),
+  borrar_listas(uuid, text),
   encargados_listar(uuid),
   encargado_guardar(uuid, bigint, text, text, boolean),
   liberar_sesion(uuid, bigint),
