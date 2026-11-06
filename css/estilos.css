@@ -104,3 +104,30 @@ h4{color:var(--dorado);font-size:15px}
 .hist:last-child{border-bottom:none}
 .hist .t{color:var(--tenue);font-size:12px}
 .hist b{color:var(--dorado-claro)}
+
+/* ===== Versión 2 ===== */
+.leyenda{font-size:12px;color:var(--tenue);margin-top:4px}
+.verde-txt{color:#4ade80} .dorado-txt{color:var(--dorado)}
+.conf{font-size:15px;margin-left:4px}
+.fila.abierta{background:#ffffff0f;border-bottom:none;border-radius:12px 12px 0 0}
+.panel{background:#ffffff0f;border-radius:0 0 12px 12px;padding:6px 14px 14px;margin-bottom:8px;border-bottom:1px solid var(--linea)}
+.panel .lbl{font-size:13px;color:var(--tenue);text-align:center;margin:6px 0 8px}
+.contador-fam{display:flex;align-items:center;justify-content:center;gap:22px}
+.contador-fam button{width:56px;height:56px;border-radius:50%;border:2px solid var(--dorado);background:transparent;color:var(--dorado);
+  font-size:30px;font-weight:700;cursor:pointer;line-height:1;font-family:inherit}
+.contador-fam button:active{background:#d9b97a33}
+.contador-fam .num{font-size:40px;font-weight:800;min-width:60px;text-align:center}
+.panel .botones{display:grid;grid-template-columns:1fr 2fr;gap:8px;margin-top:12px}
+.panel .botones .btn{margin-top:0;padding:13px;font-size:15px}
+.aviso-mini{background:#ffd16622;border:1px solid #ffd166;color:#ffe3a3;border-radius:10px;padding:8px 10px;font-size:13px;text-align:center;margin-top:6px}
+.btn.peligro{background:transparent;border:1.5px solid var(--rojo);color:var(--rojo)}
+.globo{background:var(--rojo);color:#fff;border-radius:20px;padding:1px 7px;font-size:11px;margin-left:4px;font-weight:700}
+.rev{background:#ffffff0d;border:1px solid var(--linea);border-radius:14px;padding:12px 14px;margin-top:10px}
+.rev .ins{font-size:16px;font-weight:700}
+.rev .ins small{font-weight:400;color:var(--tenue);font-size:12px;display:block}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{border:1px solid #d9b97a88;background:transparent;color:#fff;border-radius:20px;padding:8px 12px;font-size:13px;cursor:pointer;font-family:inherit;text-align:left}
+.chip:active{background:#d9b97a33}
+.chip small{color:var(--tenue)}
+.rev input{margin-top:10px;padding:10px;font-size:15px}
+.fam{white-space:nowrap}
