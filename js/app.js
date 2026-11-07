@@ -136,8 +136,8 @@
 
   async function arrancar() {
     document.querySelectorAll('.jsNombre').forEach((el) => (el.textContent = S.nombre));
-    abierto = null;
-    await refrescar(true);
+    abierto = null; seq = null; personas = [];
+    await refrescar(true, true);
     if (!S) return;
     if (S.rol === 'admin') { vista('vAdm'); abrirTab('tResumen'); }
     else { vista('vEnc'); $('eBuscar').value = ''; }
@@ -151,19 +151,55 @@
   }
   function detener() { clearInterval(timer); timer = null; }
 
+  // ---- Sincronización: lista completa al entrar y cada 5 min; en medio, solo los cambios ----
   let pendientes = 0;
-  async function refrescar(forzarActividad) {
+  let seq = null;                 // último cambio recibido
+  let ultimaCompleta = 0;         // hora de la última descarga completa
+  let sinCambiosSQL = false;      // la base de datos aún no tiene listar_cambios → siempre completa
+  const COMPLETA_CADA = 10 * 60 * 1000;
+  const SOLAPE = 0;               // el servidor repite solo los cambios de los últimos segundos
+
+  async function refrescar(forzarActividad, forzarCompleta) {
     if (!S) return;
     const activo = forzarActividad || huboActividad;
     huboActividad = false;
-    const r = await rpc('listar_personas', { p_token: S.token, p_activo: activo });
-    personas = r.personas || [];
+    let cambio = false;
+    const completa = forzarCompleta || sinCambiosSQL || seq === null || Date.now() - ultimaCompleta > COMPLETA_CADA;
+    let r = null;
+    if (!completa) {
+      try {
+        r = await rpc('listar_cambios', { p_token: S.token, p_desde: Math.max(0, seq - SOLAPE), p_activo: activo });
+      } catch (e) {
+        if (e.code === 'SESION_EXPIRADA') throw e;
+        if (/listar_cambios|function|PGRST/i.test(e.message)) sinCambiosSQL = true;
+        r = null;
+      }
+      if (r && !r.completo) {
+        const quitar = new Set(r.ids || []);
+        if (quitar.size) {
+          const mapa = new Map(personas.map((p) => [p.id, p]));
+          quitar.forEach((id) => mapa.delete(id));
+          (r.personas || []).forEach((p) => mapa.set(p.id, p));
+          personas = [...mapa.values()].sort((a, b) => norm(a.n).localeCompare(norm(b.n)));
+          cambio = true;
+        }
+        seq = Math.max(seq, r.seq || 0);
+        if (S.rol === 'admin' && r.pendientes !== pendientes) { pendientes = r.pendientes || 0; cambio = true; }
+      } else r = null;
+    }
+    if (!r) {
+      r = await rpc('listar_personas', { p_token: S.token, p_activo: activo });
+      personas = r.personas || [];
+      seq = r.seq ?? 0;
+      ultimaCompleta = Date.now();
+      if (S.rol === 'admin') { pendientes = r.pendientes || 0; if (!$('ajTiempo').value) $('ajTiempo').value = r.timeout; }
+      cambio = true;
+    }
+    if (!cambio) return;            // nada nuevo: no se vuelve a dibujar
     if (S.rol === 'admin') {
-      pendientes = r.pendientes || 0;
       $('globoRev').textContent = pendientes;
       $('globoRev').classList.toggle('hide', !pendientes);
       pintarResumen(); pintarAsistenciaAdm();
-      if (!$('ajTiempo').value) $('ajTiempo').value = r.timeout;
     } else { llenarAreas(); pintarLista(); }
   }
 
@@ -535,7 +571,7 @@
       await rpc('borrar_listas', { p_token: S.token, p_que: que });
       toast('Listo, se borró: ' + txt);
       sel.value = '';
-      await refrescar(true); cargarGalSin();
+      await refrescar(true, true); cargarGalSin();
     } catch (e) { toast(e.message, true); }
   }
 
@@ -623,7 +659,7 @@
       if (tipo === 'c') m += ` ✅ ${r.cruzados} se cruzaron solos con la nómina.` + (r.pendientes ? ` ${r.pendientes} quedaron en "Por revisar".` : '');
       if (tipo === 'g' && r.sin_lista) m += ` ${r.sin_lista} galardonado(s) aún no están en la nómina (ver Ajustes).`;
       aviso('subirRes', m);
-      await refrescar(true);
+      await refrescar(true, true);
     } catch (e) { aviso('subirRes', e.message, true); }
   }
 
